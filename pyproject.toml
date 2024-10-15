@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "pytorchonnx"
+version = "0.1.0"
+description = ""
+authors = ["Jihoon Kim <jihoonerd@outlook.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = "^2.4.1"
+torchvision = "^0.19.1"
+onnx = "^1.17.0"
+onnxruntime = "^1.19.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
