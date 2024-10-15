@@ -11,6 +11,7 @@ torch = "^2.4.1"
 torchvision = "^0.19.1"
 onnx = "^1.17.0"
 onnxruntime = "^1.19.2"
+black = "^24.10.0"
 
 
 [build-system]

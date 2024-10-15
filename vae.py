@@ -8,18 +8,18 @@ import os
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
-mps_available = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 # Hyperparameters
 batch_size = 128
 latent_dim = 20
 epochs = 10
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load MNIST dataset
 transform = transforms.Compose([transforms.ToTensor()])
-train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+train_dataset = datasets.MNIST(
+    root="./data", train=True, download=True, transform=transform
+)
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
 
@@ -62,7 +62,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # Loss function
 def loss_function(recon_x, x, mu, logvar):
-    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 784), reduction='sum')
+    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 784), reduction="sum")
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return BCE + KLD
 
@@ -82,9 +82,13 @@ def train(epoch):
 
         if batch_idx % 100 == 0:
             print(
-                f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} ({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item() / len(data):.6f}')
+                f"Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} "
+                f"({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item() / len(data):.6f}"
+            )
 
-    print(f'====> Epoch: {epoch} Average loss: {train_loss / len(train_loader.dataset):.4f}')
+    print(
+        f"====> Epoch: {epoch} Average loss: {train_loss / len(train_loader.dataset):.4f}"
+    )
 
 
 # Run the training
@@ -101,7 +105,7 @@ def generate_digits(num_samples=10):
 
 
 # Generate and save digits
-def save_generated_digits(num_samples=10, output_dir='generated_digits'):
+def save_generated_digits(num_samples=10, output_dir="generated_digits"):
     generated_digits = generate_digits(num_samples)
 
     # Create output directory if it doesn't exist
@@ -109,10 +113,12 @@ def save_generated_digits(num_samples=10, output_dir='generated_digits'):
 
     # Save individual images
     for i, digit in enumerate(generated_digits):
-        utils.save_image(digit, os.path.join(output_dir, f'generated_digit_{i}.png'))
+        utils.save_image(digit, os.path.join(output_dir, f"generated_digit_{i}.png"))
 
     # Save a grid of images
-    utils.save_image(generated_digits, os.path.join(output_dir, 'generated_digits_grid.png'), nrow=5)
+    utils.save_image(
+        generated_digits, os.path.join(output_dir, "generated_digits_grid.png"), nrow=5
+    )
 
     print(f"Generated digits saved in {output_dir}")
 
@@ -121,8 +127,8 @@ def save_generated_digits(num_samples=10, output_dir='generated_digits'):
 save_generated_digits(num_samples=25)
 
 
-# Export model to ONNX
-def export_to_onnx(model, output_path='vae_mnist.onnx'):
+# Export model components to ONNX
+def export_to_onnx(model, output_dir="onnx_models"):
     try:
         import onnx
         import onnxruntime
@@ -132,41 +138,131 @@ def export_to_onnx(model, output_path='vae_mnist.onnx'):
         print("Then run this function again.")
         return
 
+    os.makedirs(output_dir, exist_ok=True)
     model.eval()
+
+    # Export full model
     dummy_input = torch.randn(1, 1, 28, 28, device=device)
+    torch.onnx.export(
+        model,
+        dummy_input,
+        f"{output_dir}/vae_full.onnx",
+        input_names=["input"],
+        output_names=["reconstructed", "mu", "logvar"],
+    )
 
-    try:
-        # Export the encoder
-        torch.onnx.export(model,
-                          dummy_input,
-                          output_path,
-                          export_params=True,
-                          opset_version=11,
-                          do_constant_folding=True,
-                          input_names=['input'],
-                          output_names=['reconstructed', 'mu', 'logvar'],
-                          dynamic_axes={'input': {0: 'batch_size'},
-                                        'reconstructed': {0: 'batch_size'},
-                                        'mu': {0: 'batch_size'},
-                                        'logvar': {0: 'batch_size'}})
+    # Export encoder
+    class EncoderWrapper(nn.Module):
+        def __init__(self, vae):
+            super().__init__()
+            self.vae = vae
 
-        print(f"Model exported to ONNX format at {output_path}")
+        def forward(self, x):
+            return self.vae.encode(x.view(-1, 784))
 
-        # Verify the exported model
-        onnx_model = onnx.load(output_path)
+    encoder_wrapper = EncoderWrapper(model)
+    torch.onnx.export(
+        encoder_wrapper,
+        dummy_input,
+        f"{output_dir}/vae_encoder.onnx",
+        input_names=["input"],
+        output_names=["mu", "logvar"],
+    )
+
+    # Export reparameterize
+    class ReparameterizeWrapper(nn.Module):
+        def __init__(self, vae):
+            super().__init__()
+            self.vae = vae
+
+        def forward(self, mu, logvar):
+            return self.vae.reparameterize(mu, logvar)
+
+    reparameterize_wrapper = ReparameterizeWrapper(model)
+    dummy_mu = torch.randn(1, latent_dim, device=device)
+    dummy_logvar = torch.randn(1, latent_dim, device=device)
+    torch.onnx.export(
+        reparameterize_wrapper,
+        (dummy_mu, dummy_logvar),
+        f"{output_dir}/vae_reparameterize.onnx",
+        input_names=["mu", "logvar"],
+        output_names=["z"],
+    )
+
+    # Export decoder
+    class DecoderWrapper(nn.Module):
+        def __init__(self, vae):
+            super().__init__()
+            self.vae = vae
+
+        def forward(self, z):
+            return self.vae.decode(z)
+
+    decoder_wrapper = DecoderWrapper(model)
+    dummy_z = torch.randn(1, latent_dim, device=device)
+    torch.onnx.export(
+        decoder_wrapper,
+        dummy_z,
+        f"{output_dir}/vae_decoder.onnx",
+        input_names=["z"],
+        output_names=["reconstructed"],
+    )
+
+    print(f"Model components exported to ONNX format in directory: {output_dir}")
+
+    # Verify exported models
+    for model_name in [
+        "vae_full.onnx",
+        "vae_encoder.onnx",
+        "vae_reparameterize.onnx",
+        "vae_decoder.onnx",
+    ]:
+        onnx_model = onnx.load(f"{output_dir}/{model_name}")
         onnx.checker.check_model(onnx_model)
-        print("ONNX model checked successfully!")
-
-        # Test with ONNX Runtime
-        ort_session = onnxruntime.InferenceSession(output_path)
-        ort_inputs = {ort_session.get_inputs()[0].name: dummy_input.cpu().numpy()}
-        ort_outputs = ort_session.run(None, ort_inputs)
-        print("ONNX Runtime inference test passed successfully!")
-
-    except Exception as e:
-        print(f"Error during ONNX export: {str(e)}")
-        print("Please ensure you have the latest versions of PyTorch and ONNX installed.")
+        print(f"ONNX model {model_name} checked successfully!")
 
 
-# Export the model to ONNX
+# Export the model components to ONNX
 export_to_onnx(model)
+
+
+# Function to run inference on ONNX models
+def onnx_inference(model_path, inputs):
+    import onnxruntime
+
+    ort_session = onnxruntime.InferenceSession(model_path)
+    ort_inputs = {ort_session.get_inputs()[i].name: inp for i, inp in enumerate(inputs)}
+    ort_outputs = ort_session.run(None, ort_inputs)
+    return ort_outputs
+
+
+# Example usage of ONNX models
+print("\nRunning inference on ONNX models:")
+dummy_input = torch.randn(1, 1, 28, 28).numpy()
+dummy_mu = torch.randn(1, latent_dim).numpy()
+dummy_logvar = torch.randn(1, latent_dim).numpy()
+dummy_z = torch.randn(1, latent_dim).numpy()
+
+print("Full VAE inference:")
+full_outputs = onnx_inference("onnx_models/vae_full.onnx", [dummy_input])
+print(
+    f"  Outputs: reconstructed shape: {full_outputs[0].shape}, mu shape: {full_outputs[1].shape}, logvar shape: {full_outputs[2].shape}"
+)
+
+print("Encoder inference:")
+encoder_outputs = onnx_inference("onnx_models/vae_encoder.onnx", [dummy_input])
+print(
+    f"  Outputs: mu shape: {encoder_outputs[0].shape}, logvar shape: {encoder_outputs[1].shape}"
+)
+
+print("Reparameterize inference:")
+reparameterize_outputs = onnx_inference(
+    "onnx_models/vae_reparameterize.onnx", [dummy_mu, dummy_logvar]
+)
+print(f"  Outputs: z shape: {reparameterize_outputs[0].shape}")
+
+print("Decoder inference:")
+decoder_outputs = onnx_inference("onnx_models/vae_decoder.onnx", [dummy_z])
+print(f"  Outputs: reconstructed shape: {decoder_outputs[0].shape}")
+
+print("\nONNX inference completed successfully!")
